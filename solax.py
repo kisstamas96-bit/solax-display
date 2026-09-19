@@ -1,54 +1,109 @@
 import os
 import requests
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
-SOLAX_TOKEN = os.getenv("SOLAX_TOKEN")
-SOLAX_SN = os.getenv("SOLAX_SN")
-GEEKMAGIC_IP = os.getenv("GEEKMAGIC_IP")
+# ---------------------------------------------------------------------------
+# 1. Beállítások & Környezeti változók
+# ---------------------------------------------------------------------------
+SOLAX_TOKEN = os.environ.get("SOLAX_TOKEN")
+SOLAX_SN = os.environ.get("SOLAX_SN")
+GEEKMAGIC_IP = os.environ.get("GEEKMAGIC_IP")
 
-def get_solax_data():
-    url = f"https://global.solaxcloud.com/proxyApp/proxy/api/getRealtimeInfo.do?tokenId={SOLAX_TOKEN}&sn={SOLAX_SN}"
+SOLAX_URL = f"https://global.solaxcloud.com/proxy/api/getRealtimeInfo.do?tokenId={SOLAX_TOKEN}&sn={SOLAX_SN}"
+
+# ---------------------------------------------------------------------------
+# 2. SolaX Adatok Lekérése
+# ---------------------------------------------------------------------------
+def fetch_solax_data():
     try:
-        res = requests.get(url, timeout=10).json()
-        if res.get("success"):
-            data = res["result"]
-            yield_today = data.get("yieldtoday", 0)
-            feedin_power = data.get("feedinpower", 0)
-            soc = data.get("soc", 0)
-            return yield_today, feedin_power, soc
+        r = requests.get(SOLAX_URL, timeout=10)
+        data = r.json()
+        if data.get("success"):
+            result = data.get("result", {})
+            return {
+                "acpower": result.get("acpower", 0),       # Termelés / Hálózati teljesítmény (W)
+                "yieldtoday": result.get("yieldtoday", 0), # Mai termelés (kWh)
+                "uploadTime": result.get("uploadTime", "")
+            }
+        else:
+            print("SolaX API válasz hiba:", data)
+            return None
     except Exception as e:
-        print(f"Hiba a SolaX lekérésnél: {e}")
-    return 0, 0, 0
+        print(f"Hiba a SolaX lekéréskor: {e}")
+        return None
 
-def create_image(yield_today, power_w, soc):
-    img = Image.new("RGB", (240, 240), color=(15, 23, 42))
+# ---------------------------------------------------------------------------
+# 3. Kép Generálása (240x240 pixel a GeekMagic-hez)
+# ---------------------------------------------------------------------------
+def create_display_image(data):
+    # Fekete háttér
+    img = Image.new("RGB", (240, 240), color=(0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    draw.text((20, 15), "SOLAX NAPELEM", fill=(255, 255, 255))
-    draw.line([(20, 40), (220, 40)], fill=(51, 65, 85), width=2)
-    
-    power_kw = round(power_w / 1000.0, 2) if power_w else 0
-    draw.text((20, 55), "Termeles (kW):", fill=(148, 163, 184))
-    draw.text((20, 75), f"{power_kw} kW", fill=(52, 211, 153))
+    # Alapértelmezett betűtípus használata
+    try:
+        font_large = ImageFont.truetype("DejaVuSans-Bold.ttf", 36)
+        font_med = ImageFont.truetype("DejaVuSans.ttf", 22)
+        font_small = ImageFont.truetype("DejaVuSans.ttf", 14)
+    except:
+        font_large = ImageFont.load_default()
+        font_med = ImageFont.load_default()
+        font_small = ImageFont.load_default()
 
-    draw.text((20, 120), "Mai napi (kWh):", fill=(148, 163, 184))
-    draw.text((20, 140), f"{yield_today} kWh", fill=(250, 204, 21))
+    # Fejléc
+    draw.text((10, 10), "SOLAX SOLAR", fill=(255, 200, 0), font=font_med)
+    draw.line([(10, 38), (230, 38)], fill=(100, 100, 100), width=1)
 
-    draw.text((20, 185), f"Akku: {soc}%", fill=(96, 165, 250))
+    if data:
+        power = data["acpower"]
+        yield_today = data["yieldtoday"]
 
-    img.save("solax_now.jpg", "JPEG")
+        # Aktuális teljesítmény
+        draw.text((10, 50), "NOW:", fill=(200, 200, 200), font=font_small)
+        draw.text((10, 70), f"{power} W", fill=(0, 255, 128), font=font_large)
 
+        # Mai termelés
+        draw.text((10, 130), "TODAY:", fill=(200, 200, 200), font=font_small)
+        draw.text((10, 150), f"{yield_today} kWh", fill=(0, 200, 255), font=font_med)
+
+        # Időbélyeg
+        time_str = data["uploadTime"].split(" ")[-1] if " " in data["uploadTime"] else data["uploadTime"]
+        draw.text((10, 210), f"Updated: {time_str}", fill=(120, 120, 120), font=font_small)
+    else:
+        draw.text((10, 100), "API ERROR", fill=(255, 50, 50), font=font_med)
+
+    img.save("solax_now.jpg", "JPEG", quality=90)
+    print("Kép sikeresen legyártva: solax_now.jpg")
+
+# ---------------------------------------------------------------------------
+# 4. Feltöltés a GeekMagic Kijelzőre (Cloudflare Alagúton Át)
+# ---------------------------------------------------------------------------
 def upload_to_geekmagic():
-    target_url = f"http://{GEEKMAGIC_IP}/upload"
+    if not GEEKMAGIC_IP:
+        print("HIBA: Nincs megadva GEEKMAGIC_IP Secret!")
+        return
+
+    # Cím megtisztítása az esetleges előtagoktól
+    raw_ip = GEEKMAGIC_IP.strip()
+    raw_ip = raw_ip.replace("https://", "").replace("http://", "").rstrip("/")
+    
+    # A kijelző webes felületének pontos feltöltési címe:
+    target_url = f"https://{raw_ip}/doUpload?dir=/image/"
+    
+    print(f"Kép feltöltése a következő címre: {target_url}")
     try:
         with open("solax_now.jpg", "rb") as f:
+            # A kijelző a 'file' mezőnevet várja
             files = {"file": ("solax_now.jpg", f, "image/jpeg")}
             r = requests.post(target_url, files=files, timeout=15)
-            print("Kép feltöltve a kijelzőre! Státusz:", r.status_code)
+            print("Válasz a kijelzőtől:", r.status_code, r.text)
     except Exception as e:
         print(f"Feltöltési hiba: {e}")
 
+# ---------------------------------------------------------------------------
+# Főprogram
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    yt, p, soc = get_solax_data()
-    create_image(yt, p, soc)
+    solax_data = fetch_solax_data()
+    create_display_image(solax_data)
     upload_to_geekmagic()
