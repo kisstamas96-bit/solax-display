@@ -3,44 +3,47 @@ import requests
 from PIL import Image, ImageDraw, ImageFont
 
 # ---------------------------------------------------------------------------
-# 1. Beállítások & Környezeti változók
+# 1. Beállítások
 # ---------------------------------------------------------------------------
-SOLAX_TOKEN = os.environ.get("SOLAX_TOKEN")
-SOLAX_SN = os.environ.get("SOLAX_SN")
 GEEKMAGIC_IP = os.environ.get("GEEKMAGIC_IP")
 
-SOLAX_URL = f"https://global.solaxcloud.com/proxy/api/getRealtimeInfo.do?tokenId={SOLAX_TOKEN}&sn={SOLAX_SN}"
+# A nyilvános megosztási kód alapján hívható közvetlen adat-végpont
+SHARE_CODE = "8b1ccd5d7e92473585ae9e304a3bd69a"
+SOLAX_SHARE_URL = f"https://euapi.solaxcloud.com/proxy/api/getRealtimeInfo.do?shareCode={SHARE_CODE}"
 
 # ---------------------------------------------------------------------------
-# 2. SolaX Adatok Lekérése
+# 2. SolaX Adatok Lekérése a megosztott linkből
 # ---------------------------------------------------------------------------
 def fetch_solax_data():
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
     try:
-        r = requests.get(SOLAX_URL, timeout=10)
+        r = requests.get(SOLAX_SHARE_URL, headers=headers, timeout=10)
+        print(f"SolaX HTTP válaszkód: {r.status_code}")
+        
         data = r.json()
         if data.get("success"):
             result = data.get("result", {})
             return {
-                "acpower": result.get("acpower", 0),       # Termelés / Hálózati teljesítmény (W)
+                "acpower": result.get("acpower", 0),       # Aktuális teljesítmény (W)
                 "yieldtoday": result.get("yieldtoday", 0), # Mai termelés (kWh)
                 "uploadTime": result.get("uploadTime", "")
             }
         else:
-            print("SolaX API válasz hiba:", data)
+            print("SolaX megosztási válasz hiba:", data)
             return None
     except Exception as e:
         print(f"Hiba a SolaX lekéréskor: {e}")
         return None
 
 # ---------------------------------------------------------------------------
-# 3. Kép Generálása (240x240 pixel a GeekMagic-hez)
+# 3. Kép Generálása (240x240 pixel)
 # ---------------------------------------------------------------------------
 def create_display_image(data):
-    # Fekete háttér
     img = Image.new("RGB", (240, 240), color=(0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    # Alapértelmezett betűtípus használata
     try:
         font_large = ImageFont.truetype("DejaVuSans-Bold.ttf", 36)
         font_med = ImageFont.truetype("DejaVuSans.ttf", 22)
@@ -76,24 +79,20 @@ def create_display_image(data):
     print("Kép sikeresen legyártva: solax_now.jpg")
 
 # ---------------------------------------------------------------------------
-# 4. Feltöltés a GeekMagic Kijelzőre (Cloudflare Alagúton Át)
+# 4. Feltöltés a GeekMagic Kijelzőre
 # ---------------------------------------------------------------------------
 def upload_to_geekmagic():
     if not GEEKMAGIC_IP:
         print("HIBA: Nincs megadva GEEKMAGIC_IP Secret!")
         return
 
-    # Cím megtisztítása az esetleges előtagoktól
     raw_ip = GEEKMAGIC_IP.strip()
     raw_ip = raw_ip.replace("https://", "").replace("http://", "").rstrip("/")
-    
-    # A kijelző webes felületének pontos feltöltési címe:
     target_url = f"https://{raw_ip}/doUpload?dir=/image/"
     
     print(f"Kép feltöltése a következő címre: {target_url}")
     try:
         with open("solax_now.jpg", "rb") as f:
-            # A kijelző a 'file' mezőnevet várja
             files = {"file": ("solax_now.jpg", f, "image/jpeg")}
             r = requests.post(target_url, files=files, timeout=15)
             print("Válasz a kijelzőtől:", r.status_code, r.text)
